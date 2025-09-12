@@ -5,8 +5,12 @@ import logging
 from datetime import datetime
 from typing import List
 
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
 # FastAPI imports
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -25,26 +29,8 @@ def get_base_url():
         port = os.getenv("PORT", "8050")
         return f"http://localhost:{port}"
 
-# Route handling
-root_path = "/" 
-if os.getenv("ROUTE"):
-    root_path = os.getenv("ROUTE")
-    if not root_path.startswith('/'):
-        root_path = '/' + root_path
-
-# Set deployment URL properly
-base_route = os.environ.get('ROUTE', '')
-if base_route and not base_route.startswith('/'):
-    base_route = '/' + base_route
-if base_route and not base_route.endswith('/'):
-    base_route = base_route + '/'
-
-os.environ["DEPLOYMENT_URL"] = f"https://qa-org2.katonic.ai{base_route}"
-
-# Add Azure OpenAI configuration
-os.environ["AZURE_OPENAI_ENDPOINT"] = "https://katonic-oai-gpt4.openai.azure.com"
-os.environ["AZURE_OPENAI_DEPLOYMENT"] = "gpt-4o"
-os.environ["AZURE_OPENAI_API_VERSION"] = "2024-02-15-preview"
+# Simplified route handling
+root_path = os.getenv("ROUTE", "").rstrip('/') if os.getenv("ROUTE") else ""
 
 # Pydantic models
 class SalesScriptRequest(BaseModel):
@@ -82,7 +68,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    root_path=root_path.rstrip('/') if root_path != '/' else ''
+    root_path=root_path
 )
 
 # Add CORS middleware
@@ -94,35 +80,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Root endpoint
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "message": "Sales Script Generator API",
+        "status": "running",
+        "docs_url": f"{get_base_url()}/docs",
+        "api_endpoint": f"{get_base_url()}/api/generate-script"
+    }
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
 # Helper function to generate sales scripts
 def generate_sales_script(product_name: str, target_audience: str, key_benefits: List[str]) -> dict:
     """Generate a simple sales script"""
     
-    # Format benefits list
-    benefits_list = "\n".join([f"• {benefit}" for benefit in key_benefits])
-    
-    # Simple script template
-    script = f"""Hello, this is [Your Name] from [Company]. I hope I'm not catching you at a bad time.
+    try:
+        # Validate inputs
+        if not product_name.strip():
+            raise ValueError("Product name cannot be empty")
+        if not target_audience.strip():
+            raise ValueError("Target audience cannot be empty")
+        if not key_benefits or len(key_benefits) == 0:
+            raise ValueError("At least one key benefit is required")
+        
+        # Format benefits list
+        benefits_list = "\n".join([f"• {benefit.strip()}" for benefit in key_benefits if benefit.strip()])
+        
+        # Enhanced script template
+        script = f"""Hello, this is [Your Name] from [Company]. I hope I'm not catching you at a bad time.
 
 I'm reaching out to {target_audience} because I know you're always looking for ways to improve your business.
 
 We've developed {product_name} that specifically helps businesses like yours with:
 {benefits_list}
 
-I'd love to show you how {product_name} can benefit your business. 
+Many of our clients have seen significant improvements in their operations after implementing {product_name}.
 
-Would you have 15 minutes this week for a quick demonstration?
+I'd love to show you how {product_name} can benefit your business specifically. 
 
-What would work better for you - Tuesday afternoon or Thursday morning?"""
+Would you have 15 minutes this week for a quick demonstration? I can show you exactly how this would work for your situation.
+
+What would work better for you - Tuesday afternoon or Thursday morning?
+
+Thank you for your time, and I look forward to hearing from you!"""
+        
+        # Count words
+        word_count = len(script.split())
+        
+        return {
+            "success": True,
+            "script": script,
+            "word_count": word_count
+        }
     
-    # Count words
-    word_count = len(script.split())
-    
-    return {
-        "success": True,
-        "script": script,
-        "word_count": word_count
-    }
+    except Exception as e:
+        raise ValueError(f"Error generating script: {str(e)}")
 
 # Main Sales Script Generator endpoint
 @app.post("/api/generate-script", response_model=SalesScriptResponse)
@@ -144,14 +163,13 @@ async def generate_script(script_request: SalesScriptRequest):
         
         return SalesScriptResponse(**result)
         
-    except Exception as e:
-        logger.error(f"Error generating script: {e}")
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
         
-        return SalesScriptResponse(
-            success=False,
-            script=f"Error generating script: {str(e)}",
-            word_count=0
-        )
+    except Exception as e:
+        logger.error(f"Unexpected error generating script: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # Startup event
 @app.on_event("startup")
@@ -160,6 +178,13 @@ async def startup_event():
     logger.info("Sales Script Generator API Started")
     logger.info(f"API Endpoint: {get_base_url()}/api/generate-script")
     logger.info(f"Interactive docs: {get_base_url()}/docs")
+    logger.info(f"Root path: {root_path}")
+    
+    # Check OpenAI configuration
+    if os.getenv("OPENAI_API_KEY"):
+        logger.info("OpenAI API key found - AI-powered script generation enabled")
+    else:
+        logger.info("No OpenAI API key - running with template-based script generation only")
 
 # Main entry point
 if __name__ == "__main__":
